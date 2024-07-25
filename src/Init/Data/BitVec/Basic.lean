@@ -151,12 +151,12 @@ end Int
 section Syntax
 
 /-- Notation for bit vector literals. `i#n` is a shorthand for `BitVec.ofNat n i`. -/
-scoped syntax:max term:max noWs "#" noWs term:max : term
-macro_rules | `($i#$n) => `(BitVec.ofNat $n $i)
+syntax:max num noWs "#" noWs term:max : term
+macro_rules | `($i:num#$n) => `(BitVec.ofNat $n $i)
 
 /-- Unexpander for bit vector literals. -/
 @[app_unexpander BitVec.ofNat] def unexpandBitVecOfNat : Lean.PrettyPrinter.Unexpander
-  | `($(_) $n $i) => `($i#$n)
+  | `($(_) $n $i:num) => `($i:num#$n)
   | _ => throw ()
 
 /-- Notation for bit vector literals without truncation. `i#'lt` is a shorthand for `BitVec.ofNatLt i lt`. -/
@@ -198,7 +198,7 @@ instance : Add (BitVec n) := ⟨BitVec.add⟩
 Subtraction for bit vectors. This can be interpreted as either signed or unsigned subtraction
 modulo `2^n`.
 -/
-protected def sub (x y : BitVec n) : BitVec n := .ofNat n (x.toNat + (2^n - y.toNat))
+protected def sub (x y : BitVec n) : BitVec n := .ofNat n ((2^n - y.toNat) + x.toNat)
 instance : Sub (BitVec n) := ⟨BitVec.sub⟩
 
 /--
@@ -504,7 +504,7 @@ equivalent to `a * 2^s`, modulo `2^n`.
 
 SMT-Lib name: `bvshl` except this operator uses a `Nat` shift value.
 -/
-protected def shiftLeft (a : BitVec n) (s : Nat) : BitVec n := (a.toNat <<< s)#n
+protected def shiftLeft (a : BitVec n) (s : Nat) : BitVec n := BitVec.ofNat n (a.toNat <<< s)
 instance : HShiftLeft (BitVec w) Nat (BitVec w) := ⟨.shiftLeft⟩
 
 /--
@@ -534,6 +534,11 @@ def sshiftRight (a : BitVec n) (s : Nat) : BitVec n := .ofInt n (a.toInt >>> s)
 instance {n} : HShiftLeft  (BitVec m) (BitVec n) (BitVec m) := ⟨fun x y => x <<< y.toNat⟩
 instance {n} : HShiftRight (BitVec m) (BitVec n) (BitVec m) := ⟨fun x y => x >>> y.toNat⟩
 
+/-- Auxiliary function for `rotateLeft`, which does not take into account the case where
+the rotation amount is greater than the bitvector width. -/
+def rotateLeftAux (x : BitVec w) (n : Nat) : BitVec w :=
+  x <<< n ||| x >>> (w - n)
+
 /--
 Rotate left for bit vectors. All the bits of `x` are shifted to higher positions, with the top `n`
 bits wrapping around to fill the low bits.
@@ -543,7 +548,15 @@ rotateLeft  0b0011#4 3 = 0b1001
 ```
 SMT-Lib name: `rotate_left` except this operator uses a `Nat` shift amount.
 -/
-def rotateLeft (x : BitVec w) (n : Nat) : BitVec w := x <<< n ||| x >>> (w - n)
+def rotateLeft (x : BitVec w) (n : Nat) : BitVec w := rotateLeftAux x (n % w)
+
+
+/--
+Auxiliary function for `rotateRight`, which does not take into account the case where
+the rotation amount is greater than the bitvector width.
+-/
+def rotateRightAux (x : BitVec w) (n : Nat) : BitVec w :=
+  x >>> n ||| x <<< (w - n)
 
 /--
 Rotate right for bit vectors. All the bits of `x` are shifted to lower positions, with the
@@ -554,7 +567,7 @@ rotateRight 0b01001#5 1 = 0b10100
 ```
 SMT-Lib name: `rotate_right` except this operator uses a `Nat` shift amount.
 -/
-def rotateRight (x : BitVec w) (n : Nat) : BitVec w := x >>> n ||| x <<< (w - n)
+def rotateRight (x : BitVec w) (n : Nat) : BitVec w := rotateRightAux x (n % w)
 
 /--
 Concatenation of bitvectors. This uses the "big endian" convention that the more significant
@@ -600,6 +613,13 @@ theorem append_ofBool (msbs : BitVec w) (lsb : Bool) :
 theorem ofBool_append (msb : Bool) (lsbs : BitVec w) :
     ofBool msb ++ lsbs = (cons msb lsbs).cast (Nat.add_comm ..) :=
   rfl
+
+/--
+`twoPow w i` is the bitvector `2^i` if `i < w`, and `0` otherwise.
+That is, 2 to the power `i`.
+For the bitwise point of view, it has the `i`th bit as `1` and all other bits as `0`.
+-/
+def twoPow (w : Nat) (i : Nat) : BitVec w := 1#w <<< i
 
 end bitwise
 

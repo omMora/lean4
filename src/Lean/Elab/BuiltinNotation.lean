@@ -205,7 +205,7 @@ private def elabTParserMacroAux (prec lhsPrec e : Term) : TermElabM Syntax := do
   | _                                        => Macro.throwUnsupported
 
 @[builtin_term_elab «sorry»] def elabSorry : TermElab := fun stx expectedType? => do
-  let stxNew ← `(@sorryAx _ false) -- Remark: we use `@` to ensure `sorryAx` will not consume auot params
+  let stxNew ← `(@sorryAx _ false) -- Remark: we use `@` to ensure `sorryAx` will not consume auto params
   withMacroExpansion stx stxNew <| elabTerm stxNew expectedType?
 
 /-- Return syntax `Prod.mk elems[0] (Prod.mk elems[1] ... (Prod.mk elems[elems.size - 2] elems[elems.size - 1])))` -/
@@ -219,6 +219,31 @@ partial def mkPairs (elems : Array Term) : MacroM Term :=
     else
       pure acc
   loop (elems.size - 1) elems.back
+
+/-- Return syntax `PProd.mk elems[0] (PProd.mk elems[1] ... (PProd.mk elems[elems.size - 2] elems[elems.size - 1])))` -/
+partial def mkPPairs (elems : Array Term) : MacroM Term :=
+  let rec loop (i : Nat) (acc : Term) := do
+    if i > 0 then
+      let i    := i - 1
+      let elem := elems[i]!
+      let acc ← `(PProd.mk $elem $acc)
+      loop i acc
+    else
+      pure acc
+  loop (elems.size - 1) elems.back
+
+/-- Return syntax `MProd.mk elems[0] (MProd.mk elems[1] ... (MProd.mk elems[elems.size - 2] elems[elems.size - 1])))` -/
+partial def mkMPairs (elems : Array Term) : MacroM Term :=
+  let rec loop (i : Nat) (acc : Term) := do
+    if i > 0 then
+      let i    := i - 1
+      let elem := elems[i]!
+      let acc ← `(MProd.mk $elem $acc)
+      loop i acc
+    else
+      pure acc
+  loop (elems.size - 1) elems.back
+
 
 open Parser in
 partial def hasCDot : Syntax → Bool

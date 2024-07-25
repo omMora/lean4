@@ -253,16 +253,20 @@ instance : ToString TaskState := ⟨TaskState.toString⟩
 @[extern "lean_io_wait"] opaque wait (t : Task α) : BaseIO α :=
   return t.get
 
-local macro "nonempty_list" : tactic =>
-  `(tactic| exact Nat.zero_lt_succ _)
-
 /-- Wait until any of the tasks in the given list has finished, then return its result. -/
 @[extern "lean_io_wait_any"] opaque waitAny (tasks : @& List (Task α))
-    (h : tasks.length > 0 := by nonempty_list) : BaseIO α :=
+    (h : tasks.length > 0 := by exact Nat.zero_lt_succ _) : BaseIO α :=
   return tasks[0].get
 
 /-- Helper method for implementing "deterministic" timeouts. It is the number of "small" memory allocations performed by the current execution thread. -/
 @[extern "lean_io_get_num_heartbeats"] opaque getNumHeartbeats : BaseIO Nat
+
+/--
+Adjusts the heartbeat counter of the current thread by the given amount. This can be useful to give
+allocation-avoiding code additional "weight" and is also used to adjust the counter after resuming
+from a snapshot.
+-/
+@[extern "lean_io_add_heartbeats"] opaque addHeartbeats (count : UInt64) : BaseIO Unit
 
 /--
 The mode of a file handle (i.e., a set of `open` flags and an `fdopen` mode).
@@ -708,7 +712,16 @@ structure Child (cfg : StdioConfig) where
 
 @[extern "lean_io_process_spawn"] opaque spawn (args : SpawnArgs) : IO (Child args.toStdioConfig)
 
+/--
+Block until the child process has exited and return its exit code.
+-/
 @[extern "lean_io_process_child_wait"] opaque Child.wait {cfg : @& StdioConfig} : @& Child cfg → IO UInt32
+
+/--
+Check whether the child has exited yet. If it hasn't return none, otherwise its exit code.
+-/
+@[extern "lean_io_process_child_try_wait"] opaque Child.tryWait {cfg : @& StdioConfig} : @& Child cfg →
+    IO (Option UInt32)
 
 /-- Terminates the child process using the SIGTERM signal or a platform analogue.
     If the process was started using `SpawnArgs.setsid`, terminates the entire process group instead. -/
@@ -785,6 +798,36 @@ instance : MonadLift (ST IO.RealWorld) BaseIO := ⟨id⟩
 
 def mkRef (a : α) : BaseIO (IO.Ref α) :=
   ST.mkRef a
+
+/--
+Mutable cell that can be passed around for purposes of cooperative task cancellation: request
+cancellation with `CancelToken.set` and check for it with `CancelToken.isSet`.
+
+This is a more flexible alternative to `Task.cancel` as the token can be shared between multiple
+tasks.
+-/
+structure CancelToken where
+  private ref : IO.Ref Bool
+
+namespace CancelToken
+
+/-- Creates a new cancellation token. -/
+def new : BaseIO CancelToken :=
+  CancelToken.mk <$> IO.mkRef false
+
+/-- Activates a cancellation token. Idempotent. -/
+def set (tk : CancelToken) : BaseIO Unit :=
+  tk.ref.set true
+
+/-- Checks whether the cancellation token has been activated. -/
+def isSet (tk : CancelToken) : BaseIO Bool :=
+  tk.ref.get
+
+-- separate definition as otherwise no unboxed version is generated
+@[export lean_io_cancel_token_is_set]
+private def isSetExport := @isSet
+
+end CancelToken
 
 namespace FS
 namespace Stream

@@ -553,7 +553,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_get_random_bytes (size_t nbytes, obj_arg 
 #if !defined(LEAN_WINDOWS)
     int fd_urandom = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd_urandom < 0) {
-        return io_result_mk_error(decode_io_error(errno, lean_mk_string("/dev/urandom")));
+        return io_result_mk_error(decode_io_error(errno, lean_mk_ascii_string_unchecked("/dev/urandom")));
     }
 #endif
 
@@ -637,6 +637,12 @@ extern "C" LEAN_EXPORT obj_res lean_io_allocprof(b_obj_arg msg, obj_arg fn, obj_
 /* getNumHeartbeats : BaseIO Nat */
 extern "C" LEAN_EXPORT obj_res lean_io_get_num_heartbeats(obj_arg /* w */) {
     return io_result_mk_ok(lean_uint64_to_nat(get_num_heartbeats()));
+}
+
+/* addHeartbeats (count : Int64) : BaseIO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_add_heartbeats(int64_t count, obj_arg /* w */) {
+    add_heartbeats(count);
+    return io_result_mk_ok(box(0));
 }
 
 extern "C" LEAN_EXPORT obj_res lean_io_getenv(b_obj_arg env_var, obj_arg) {
@@ -1086,7 +1092,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_exit(uint8_t code, obj_arg /* w */) {
 }
 
 void initialize_io() {
-    g_io_error_nullptr_read = lean_mk_io_user_error(mk_string("null reference read"));
+    g_io_error_nullptr_read = lean_mk_io_user_error(mk_ascii_string_unchecked("null reference read"));
     mark_persistent(g_io_error_nullptr_read);
     g_io_handle_external_class = lean_register_external_class(io_handle_finalizer, io_handle_foreach);
 #if defined(LEAN_WINDOWS)

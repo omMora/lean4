@@ -33,7 +33,6 @@ static lean_object* l_Lean_Elab_WF_preprocess___lambda__2___closed__2;
 static lean_object* l_Lean_Elab_WF_preprocess___lambda__2___closed__4;
 LEAN_EXPORT uint8_t l_Array_anyMUnsafe_any___at___private_Lean_Elab_PreDefinition_WF_Preprocess_0__Lean_Elab_WF_shouldBetaReduce___spec__1(lean_object*, lean_object*, size_t, size_t);
 uint8_t l_Lean_Expr_isHeadBetaTarget(lean_object*, uint8_t);
-lean_object* l_Lean_Expr_FindImpl_findUnsafeM_x3f___at_Lean_Expr_FindImpl_findUnsafe_x3f___spec__1(lean_object*, lean_object*);
 extern lean_object* l_Lean_levelZero;
 static lean_object* l_Lean_Elab_WF_preprocess___lambda__1___closed__1;
 LEAN_EXPORT lean_object* l_Lean_Elab_WF_preprocess___lambda__1___boxed(lean_object*, lean_object*, lean_object*, lean_object*);
@@ -57,6 +56,7 @@ static lean_object* l_Lean_Elab_WF_preprocess___lambda__2___closed__5;
 LEAN_EXPORT uint8_t l___private_Lean_Elab_PreDefinition_WF_Preprocess_0__Lean_Elab_WF_shouldBetaReduce___lambda__1(lean_object*, lean_object*);
 lean_object* lean_array_get_size(lean_object*);
 uint8_t l_Lean_Expr_isMData(lean_object*);
+lean_object* lean_find_expr(lean_object*, lean_object*);
 lean_object* l_Lean_Expr_beta(lean_object*, lean_object*);
 uint8_t l_Lean_KVMap_contains(lean_object*, lean_object*);
 LEAN_EXPORT uint8_t l_Array_anyMUnsafe_any___at___private_Lean_Elab_PreDefinition_WF_Preprocess_0__Lean_Elab_WF_shouldBetaReduce___spec__1(lean_object* x_1, lean_object* x_2, size_t x_3, size_t x_4) {
@@ -137,7 +137,9 @@ lean_object* x_6; lean_object* x_7; lean_object* x_8;
 x_6 = lean_alloc_closure((void*)(l___private_Lean_Elab_PreDefinition_WF_Preprocess_0__Lean_Elab_WF_shouldBetaReduce___lambda__1___boxed), 2, 1);
 lean_closure_set(x_6, 0, x_2);
 x_7 = l_Lean_Expr_getAppFn(x_1);
-x_8 = l_Lean_Expr_FindImpl_findUnsafeM_x3f___at_Lean_Expr_FindImpl_findUnsafe_x3f___spec__1(x_6, x_7);
+x_8 = lean_find_expr(x_6, x_7);
+lean_dec(x_7);
+lean_dec(x_6);
 if (lean_obj_tag(x_8) == 0)
 {
 uint8_t x_9; 
@@ -234,7 +236,7 @@ static lean_object* _init_l_Lean_Elab_WF_preprocess___lambda__2___closed__1() {
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes("Lean.Elab.PreDefinition.WF.Preprocess", 37);
+x_1 = lean_mk_string_unchecked("Lean.Elab.PreDefinition.WF.Preprocess", 37, 37);
 return x_1;
 }
 }
@@ -242,7 +244,7 @@ static lean_object* _init_l_Lean_Elab_WF_preprocess___lambda__2___closed__2() {
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes("Lean.Elab.WF.preprocess", 23);
+x_1 = lean_mk_string_unchecked("Lean.Elab.WF.preprocess", 23, 23);
 return x_1;
 }
 }
@@ -250,7 +252,7 @@ static lean_object* _init_l_Lean_Elab_WF_preprocess___lambda__2___closed__3() {
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes("unreachable code has been reached", 33);
+x_1 = lean_mk_string_unchecked("unreachable code has been reached", 33, 33);
 return x_1;
 }
 }

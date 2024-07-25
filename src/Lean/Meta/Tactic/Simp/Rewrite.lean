@@ -123,7 +123,14 @@ private def tryTheoremCore (lhs : Expr) (xs : Array Expr) (bis : Array BinderInf
           return none
         pure <| some proof
       let rhs := (← instantiateMVars type).appArg!
-      if e == rhs then
+      /-
+      We used to use `e == rhs` in the following test.
+      However, it include unnecessary proof steps when `e` and `rhs`
+      are equal after metavariables are instantiated.
+      We are hoping the following `instantiateMVars` should not be too expensive since
+      we seldom have assigned metavariables in goals.
+      -/
+      if (← instantiateMVars e) == rhs then
         return none
       if thm.perm then
         /-
@@ -189,19 +196,62 @@ def tryTheorem? (e : Expr) (thm : SimpTheorem) : SimpM (Option Result) := do
 Remark: the parameter tag is used for creating trace messages. It is irrelevant otherwise.
 -/
 def rewrite? (e : Expr) (s : SimpTheoremTree) (erased : PHashSet Origin) (tag : String) (rflOnly : Bool) : SimpM (Option Result) := do
-  let candidates ← s.getMatchWithExtra e (getDtConfig (← getConfig))
-  if candidates.isEmpty then
-    trace[Debug.Meta.Tactic.simp] "no theorems found for {tag}-rewriting {e}"
-    return none
+  if (← getConfig).index then
+    rewriteUsingIndex?
   else
-    let candidates := candidates.insertionSort fun e₁ e₂ => e₁.1.priority > e₂.1.priority
-    for (thm, numExtraArgs) in candidates do
-      unless inErasedSet thm || (rflOnly && !thm.rfl) do
-        if let some result ← tryTheoremWithExtraArgs? e thm numExtraArgs then
-          trace[Debug.Meta.Tactic.simp] "rewrite result {e} => {result.expr}"
-          return some result
-    return none
+    rewriteNoIndex?
 where
+  /-- For `(← getConfig).index := true`, use discrimination tree structure when collecting `simp` theorem candidates. -/
+  rewriteUsingIndex? : SimpM (Option Result) := do
+    let candidates ← s.getMatchWithExtra e (getDtConfig (← getConfig))
+    if candidates.isEmpty then
+      trace[Debug.Meta.Tactic.simp] "no theorems found for {tag}-rewriting {e}"
+      return none
+    else
+      let candidates := candidates.insertionSort fun e₁ e₂ => e₁.1.priority > e₂.1.priority
+      for (thm, numExtraArgs) in candidates do
+        unless inErasedSet thm || (rflOnly && !thm.rfl) do
+          if let some result ← tryTheoremWithExtraArgs? e thm numExtraArgs then
+            trace[Debug.Meta.Tactic.simp] "rewrite result {e} => {result.expr}"
+            return some result
+      return none
+
+  /--
+  For `(← getConfig).index := false`, Lean 3 style `simp` theorem retrieval.
+  Only the root symbol is taken into account. Most of the structure of the discrimination tree is ignored.
+  -/
+  rewriteNoIndex? : SimpM (Option Result) := do
+    let (candidates, numArgs) ← s.getMatchLiberal e (getDtConfig (← getConfig))
+    if candidates.isEmpty then
+      trace[Debug.Meta.Tactic.simp] "no theorems found for {tag}-rewriting {e}"
+      return none
+    else
+      let candidates := candidates.insertionSort fun e₁ e₂ => e₁.priority > e₂.priority
+      for thm in candidates do
+        unless inErasedSet thm || (rflOnly && !thm.rfl) do
+          let result? ← withNewMCtxDepth do
+            let val  ← thm.getValue
+            let type ← inferType val
+            let (xs, bis, type) ← forallMetaTelescopeReducing type
+            let type ← whnf (← instantiateMVars type)
+            let lhs := type.appFn!.appArg!
+            let lhsNumArgs := lhs.getAppNumArgs
+            tryTheoremCore lhs xs bis val type e thm (numArgs - lhsNumArgs)
+          if let some result := result? then
+            trace[Debug.Meta.Tactic.simp] "rewrite result {e} => {result.expr}"
+            diagnoseWhenNoIndex thm
+            return some result
+    return none
+
+  diagnoseWhenNoIndex (thm : SimpTheorem) : SimpM Unit := do
+    if (← isDiagnosticsEnabled) then
+      let candidates ← s.getMatchWithExtra e (getDtConfig (← getConfig))
+      for (candidate, _) in candidates do
+        if unsafe ptrEq thm candidate then
+          return ()
+      -- `thm` would not have been applied if `index := true`
+      recordTheoremWithBadKeys thm
+
   inErasedSet (thm : SimpTheorem) : Bool :=
     erased.contains thm.origin
 

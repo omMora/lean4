@@ -94,8 +94,41 @@ def declSig          := leading_parser
 /-- `optDeclSig` matches the signature of a declaration with optional type: a list of binders and then possibly `: type` -/
 def optDeclSig       := leading_parser
   many (ppSpace >> (Term.binderIdent <|> Term.bracketedBinder)) >> Term.optType
+/-- Right-hand side of a `:=` in a declaration, a term. -/
+def declBody : Parser :=
+  /-
+  We want to make sure that bodies starting with `by` in fact create a single `by` node instead of
+  accidentally parsing some remnants after it as well. This can especially happen when starting to
+  type comments inside tactic blocks where
+  ```
+  by
+    sleep 2000
+    unfold f
+    -starting comment here
+  ```
+  is parsed as
+  ```
+  (by
+    sleep 2000
+    unfold f
+    ) - (starting comment here)
+  ```
+  where the new nesting will discard incrementality data. By using `byTactic`'s precedence, the
+  stray `-` will be flagged as an unexpected token and will not disturb the syntax tree up to it. We
+  do not call `byTactic` directly to avoid differences in pretty printing or behavior or error
+  reporting between the two branches.
+  -/
+  lookahead (setExpected [] "by") >> termParser leadPrec <|>
+  termParser
+
+-- As the pretty printer ignores `lookahead`, we need a custom parenthesizer to choose the correct
+-- precedence
+open PrettyPrinter in
+@[combinator_parenthesizer declBody] def declBody.parenthesizer : Parenthesizer :=
+  Parenthesizer.categoryParser.parenthesizer `term 0
+
 def declValSimple    := leading_parser
-  " :=" >> ppHardLineUnlessUngrouped >> termParser >> Termination.suffix >> optional Term.whereDecls
+  " :=" >> ppHardLineUnlessUngrouped >> declBody >> Termination.suffix >> optional Term.whereDecls
 def declValEqns      := leading_parser
   Term.matchAltsWhereDecls
 def whereStructField := leading_parser
@@ -236,7 +269,7 @@ corresponding `end <id>` or the end of the file.
   "namespace " >> checkColGt >> ident
 /--
 `end` closes a `section` or `namespace` scope. If the scope is named `<id>`, it has to be closed
-with `end <id>`.
+with `end <id>`. The `end` command is optional at the end of a file.
 -/
 @[builtin_command_parser] def «end»          := leading_parser
   "end" >> optional (ppSpace >> checkColGt >> ident)
@@ -402,10 +435,10 @@ structure Pair (α : Type u) (β : Type v) : Type (max u v) where
   "#check " >> termParser
 @[builtin_command_parser] def check_failure  := leading_parser
   "#check_failure " >> termParser -- Like `#check`, but succeeds only if term does not type check
-@[builtin_command_parser] def reduce         := leading_parser
-  "#reduce " >> termParser
 @[builtin_command_parser] def eval           := leading_parser
   "#eval " >> termParser
+@[builtin_command_parser] def evalBang       := leading_parser
+  "#eval! " >> termParser
 @[builtin_command_parser] def synth          := leading_parser
   "#synth " >> termParser
 @[builtin_command_parser] def exit           := leading_parser
@@ -416,6 +449,11 @@ structure Pair (α : Type u) (β : Type v) : Type (max u v) where
   "#print " >> nonReservedSymbol "axioms " >> ident
 @[builtin_command_parser] def printEqns      := leading_parser
   "#print " >> (nonReservedSymbol "equations " <|> nonReservedSymbol "eqns ") >> ident
+/--
+Displays all available tactic tags, with documentation.
+-/
+@[builtin_command_parser] def printTacTags   := leading_parser
+  "#print " >> nonReservedSymbol "tactic " >> nonReservedSymbol "tags"
 @[builtin_command_parser] def «init_quot»    := leading_parser
   "init_quot"
 def optionValue := nonReservedSymbol "true" <|> nonReservedSymbol "false" <|> strLit <|> numLit
@@ -639,13 +677,33 @@ Documentation can only be added to declarations in the same module.
   docComment >> "add_decl_doc " >> ident
 
 /--
+Register a tactic tag, saving its user-facing name and docstring.
+
+Tactic tags can be used by documentation generation tools to classify related tactics.
+-/
+@[builtin_command_parser] def «register_tactic_tag» := leading_parser
+  optional (docComment >> ppLine) >>
+  "register_tactic_tag " >> ident >> strLit
+
+/--
+Add more documentation as an extension of the documentation for a given tactic.
+
+The extended documentation is placed in the command's docstring. It is shown as part of a bulleted
+list, so it should be brief.
+-/
+@[builtin_command_parser] def «tactic_extension» := leading_parser
+  optional (docComment >> ppLine) >>
+  "tactic_extension " >> ident
+
+
+/--
   This is an auxiliary command for generation constructor injectivity theorems for
   inductive types defined at `Prelude.lean`.
   It is meant for bootstrapping purposes only. -/
 @[builtin_command_parser] def genInjectiveTheorems := leading_parser
   "gen_injective_theorems% " >> ident
 
-/-- No-op parser used as syntax kind for attaching remaining whitespace to at the end of the input. -/
+/-- No-op parser used as syntax kind for attaching remaining whitespace at the end of the input. -/
 @[run_builtin_parser_attribute_hooks] def eoi : Parser := leading_parser ""
 
 builtin_initialize

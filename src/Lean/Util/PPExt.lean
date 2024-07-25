@@ -40,6 +40,10 @@ structure PPContext where
   openDecls     : List OpenDecl := []
 
 abbrev PrettyPrinter.InfoPerPos := RBMap Nat Elab.Info compare
+/-- A format tree with `Elab.Info` annotations.
+Each `.tag n _` node is annotated with `infos[n]`.
+This is used to attach semantic data such as expressions
+to pretty-printer outputs. -/
 structure FormatWithInfos where
   fmt : Format
   infos : PrettyPrinter.InfoPerPos
@@ -65,8 +69,8 @@ builtin_initialize ppExt : EnvExtension PPFns ←
   registerEnvExtension ppFnsRef.get
 
 def ppExprWithInfos (ctx : PPContext) (e : Expr) : IO FormatWithInfos := do
-  let e := instantiateMVarsCore ctx.mctx e |>.1
   if pp.raw.get ctx.opts then
+    let e := instantiateMVarsCore ctx.mctx e |>.1
     return format (toString e)
   else
     try

@@ -94,7 +94,7 @@ def emitCInitName (n : Name) : M Unit :=
 def shouldExport (n : Name) : Bool :=
   -- HACK: exclude symbols very unlikely to be used by the interpreter or other consumers of
   -- libleanshared to avoid Windows symbol limit
-  !(`Lean.Compiler.LCNF).isPrefixOf n
+  !(`Lean.Compiler.LCNF).isPrefixOf n && !(`Lean.IR).isPrefixOf n && !(`Lean.Server).isPrefixOf n
 
 def emitFnDeclAux (decl : Decl) (cppBaseName : String) (isExternal : Bool) : M Unit := do
   let ps := decl.params
@@ -499,7 +499,11 @@ def emitLit (z : VarId) (t : IRType) (v : LitVal) : M Unit := do
   emitLhs z;
   match v with
   | LitVal.num v => emitNumLit t v; emitLn ";"
-  | LitVal.str v => emit "lean_mk_string_from_bytes("; emit (quoteString v); emit ", "; emit v.utf8ByteSize; emitLn ");"
+  | LitVal.str v =>
+    emit "lean_mk_string_unchecked(";
+    emit (quoteString v); emit ", ";
+    emit v.utf8ByteSize; emit ", ";
+    emit v.length; emitLn ");"
 
 def emitVDecl (z : VarId) (t : IRType) (v : Expr) : M Unit :=
   match v with

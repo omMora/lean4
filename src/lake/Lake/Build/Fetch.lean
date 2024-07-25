@@ -23,12 +23,20 @@ namespace Lake
 abbrev RecBuildM :=
   CallStackT BuildKey <| BuildT <| ELogT <| StateT BuildStore <| BaseIO
 
-instance : MonadLift IO RecBuildM := ⟨MonadError.runIO⟩
+instance : MonadLift LogIO RecBuildM := ⟨ELogT.takeAndRun⟩
 
-@[inline] def RecBuildM.runLogIO (x : LogIO α) : RecBuildM α :=
-  fun _ _ log store => (·, store) <$> x log
+/--
+Run a `JobM` action in `RecBuildM` (and thus `FetchM`).
 
-instance : MonadLift LogIO RecBuildM := ⟨RecBuildM.runLogIO⟩
+Generally, this should not be done, and instead a job action
+should be run asynchronously in a Job (e.g., via `Job.async`).
+-/
+@[inline] def RecBuildM.runJobM (x : JobM α) : RecBuildM α := fun _ ctx log store => do
+  match (← x ctx {log}) with
+  | .ok a s => return (.ok a s.log, store)
+  | .error e s => return (.error e s.log, store)
+
+instance : MonadLift JobM RecBuildM := ⟨RecBuildM.runJobM⟩
 
 /-- Run a recursive build. -/
 @[inline] def RecBuildM.run
@@ -60,11 +68,17 @@ abbrev IndexT (m : Type → Type v) := EquipT (IndexBuildFn m) m
 /-- The top-level monad for Lake build functions. -/
 abbrev FetchM := IndexT RecBuildM
 
+/-- Ensures that `JobM` lifts into `FetchM`. -/
+example : MonadLiftT JobM FetchM := inferInstance
+
+/-- Ensures that `SpawnM` lifts into `FetchM`. -/
+example : MonadLiftT SpawnM FetchM := inferInstance
+
 /-- The top-level monad for Lake build functions. **Renamed `FetchM`.** -/
-@[deprecated FetchM] abbrev IndexBuildM := FetchM
+@[deprecated FetchM (since := "2024-04-30")] abbrev IndexBuildM := FetchM
 
 /-- The old build monad. **Uses should generally be replaced by `FetchM`.** -/
-@[deprecated FetchM] abbrev BuildM := CoreBuildM
+@[deprecated FetchM (since := "2024-04-30")] abbrev BuildM := BuildT LogIO
 
 /-- Fetch the result associated with the info using the Lake build index. -/
 @[inline] def BuildInfo.fetch (self : BuildInfo) [FamilyOut BuildData self.key α] : FetchM α :=
@@ -72,19 +86,49 @@ abbrev FetchM := IndexT RecBuildM
 
 export BuildInfo (fetch)
 
-/-- Register the produced job for the CLI progress UI.  -/
-def withRegisterJob
-  (caption : String) (x : FetchM (Job α))
+/-- Wraps stray I/O, logs, and errors in `x` into the produced job.  -/
+def ensureJob (x : FetchM (Job α))
 : FetchM (Job α) := fun fetch stack ctx log store => do
   let iniPos := log.endPos
   match (← (withLoggedIO x) fetch stack ctx log store) with
   | (.ok job log, store) =>
     let (log, jobLog) := log.split iniPos
-    let regJob := job.mapResult (discard <| ·.modifyState (jobLog ++  ·))
-    ctx.registeredJobs.modify (·.push (caption, regJob))
-    return (.ok job.clearLog log, store)
+    let job := if jobLog.isEmpty then job else job.mapResult (sync := true)
+      (·.modifyState (.modifyLog (jobLog ++  ·)))
+    return (.ok job log, store)
   | (.error _ log, store) =>
     let (log, jobLog) := log.split iniPos
-    let regJob := ⟨Task.pure <| .error 0 jobLog⟩
-    ctx.registeredJobs.modify (·.push (caption, regJob))
-    return (.ok .error log, store)
+    return (.ok (.error jobLog) log, store)
+
+/--
+Registers the job for the top-level build monitor,
+(e.g., the Lake CLI progress UI), assigning it `caption`.
+-/
+def registerJob (caption : String) (job : Job α) (optional := false) : FetchM (Job α) := do
+  let job : Job α := {job with caption, optional}
+  (← getBuildContext).registeredJobs.modify (·.push job)
+  return job.renew
+
+/--
+Registers the produced job for the top-level build monitor
+(e.g., the Lake CLI progress UI), assigning it `caption`.
+
+Stray I/O, logs, and errors produced by `x` will be wrapped into the job.
+-/
+def withRegisterJob
+  (caption : String) (x : FetchM (Job α)) (optional := false)
+: FetchM (Job α) := do
+  let job ← ensureJob x
+  registerJob caption job optional
+
+/--
+Registers the produced job for the top-level build monitor
+if it is not already (i.e., it has an empty caption).
+-/
+@[inline] def maybeRegisterJob
+  (caption : String) (job : Job α)
+: FetchM (Job α) := do
+  if job.caption.isEmpty then
+    registerJob caption job
+  else
+    return job

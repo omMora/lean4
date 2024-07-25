@@ -253,6 +253,9 @@ end forall_congr
 
 @[simp] theorem not_exists : (¬∃ x, p x) ↔ ∀ x, ¬p x := exists_imp
 
+theorem forall_not_of_not_exists (h : ¬∃ x, p x) : ∀ x, ¬p x := not_exists.mp h
+theorem not_exists_of_forall_not (h : ∀ x, ¬p x) : ¬∃ x, p x := not_exists.mpr h
+
 theorem forall_and : (∀ x, p x ∧ q x) ↔ (∀ x, p x) ∧ (∀ x, q x) :=
   ⟨fun h => ⟨fun x => (h x).1, fun x => (h x).2⟩, fun ⟨h₁, h₂⟩ x => ⟨h₁ x, h₂ x⟩⟩
 
@@ -292,6 +295,8 @@ theorem not_forall_of_exists_not {p : α → Prop} : (∃ x, ¬p x) → ¬∀ x,
 
 @[simp] theorem exists_eq_left' : (∃ a, a' = a ∧ p a) ↔ p a' := by simp [@eq_comm _ a']
 
+@[simp] theorem exists_eq_right' : (∃ a, p a ∧ a' = a) ↔ p a' := by simp [@eq_comm _ a']
+
 @[simp] theorem forall_eq_or_imp : (∀ a, a = a' ∨ q a → p a) ↔ p a' ∧ ∀ a, q a → p a := by
   simp only [or_imp, forall_and, forall_eq]
 
@@ -303,6 +308,11 @@ theorem not_forall_of_exists_not {p : α → Prop} : (∃ x, ¬p x) → ¬∀ x,
 
 @[simp] theorem exists_eq_right_right' : (∃ (a : α), p a ∧ q a ∧ a' = a) ↔ p a' ∧ q a' := by
   simp [@eq_comm _ a']
+
+@[simp] theorem exists_or_eq_left (y : α) (p : α → Prop) : ∃ x : α, x = y ∨ p x := ⟨y, .inl rfl⟩
+@[simp] theorem exists_or_eq_right (y : α) (p : α → Prop) : ∃ x : α, p x ∨ x = y := ⟨y, .inr rfl⟩
+@[simp] theorem exists_or_eq_left' (y : α) (p : α → Prop) : ∃ x : α, y = x ∨ p x := ⟨y, .inl rfl⟩
+@[simp] theorem exists_or_eq_right' (y : α) (p : α → Prop) : ∃ x : α, p x ∨ y = x := ⟨y, .inr rfl⟩
 
 @[simp] theorem exists_prop : (∃ _h : a, b) ↔ a ∧ b :=
   ⟨fun ⟨hp, hq⟩ => ⟨hp, hq⟩, fun ⟨hp, hq⟩ => ⟨hp, hq⟩⟩
@@ -367,9 +377,6 @@ if h : p then
 else isTrue fun h2 => absurd h2 h
 
 theorem decide_eq_true_iff (p : Prop) [Decidable p] : (decide p = true) ↔ p := by simp
-
-@[simp] theorem decide_eq_false_iff_not (p : Prop) {_ : Decidable p} : (decide p = false) ↔ ¬p :=
-  ⟨of_decide_eq_false, decide_eq_false⟩
 
 @[simp] theorem decide_eq_decide {p q : Prop} {_ : Decidable p} {_ : Decidable q} :
     decide p = decide q ↔ (p ↔ q) :=

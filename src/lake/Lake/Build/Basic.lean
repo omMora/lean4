@@ -5,7 +5,6 @@ Authors: Mac Malone
 -/
 import Lake.Util.Log
 import Lake.Util.Exit
-import Lake.Util.Task
 import Lake.Util.Lift
 import Lake.Config.Context
 import Lake.Build.Trace
@@ -24,68 +23,101 @@ structure BuildConfig where
   noBuild : Bool := false
   verbosity : Verbosity := .normal
   /--
-  Fail the top-level build if warnings have been logged.
-  Unlike some build systems, this does **NOT** convert warnings to errors,
-  and it does not abort jobs when warnings are logged (i.e., dependent jobs
-  will still continue unimpeded).
+  Fail the top-level build if entries of at least this level have been logged.
+
+  Unlike some build systems, this does **NOT** convert such log entries to
+  errors, and it does not abort jobs when warnings are logged (i.e.,
+  dependent jobs will still continue unimpeded).
   -/
-  failIfWarnings : Bool := false
-  /-- Report build output on `stdout`. Otherwise, Lake uses `stderr`. -/
-  useStdout : Bool := false
+  failLv : LogLevel := .error
+  /--
+  The stream to which Lake reports build progress.
+  By default, Lake uses `stderr`.
+  -/
+  out : OutStream := .stderr
+  /-- Whether to use ANSI escape codes in build output. -/
+  ansiMode : AnsiMode := .auto
 
-abbrev JobResult α := ELogResult α
-abbrev JobTask α := BaseIOTask (JobResult α)
+/-- The minimum log level for an log entry to be reported. -/
+@[inline] def BuildConfig.outLv (cfg : BuildConfig) : LogLevel :=
+  cfg.verbosity.minLogLv
 
-/-- A Lake job. -/
-structure Job (α : Type u)  where
-  task : JobTask α
+/--
+Whether the build should show progress information.
+
+`Verbosity.quiet` hides progress and, for a `noBuild`,
+`Verbosity.verbose` shows progress.
+-/
+def BuildConfig.showProgress (cfg : BuildConfig) : Bool :=
+  (cfg.noBuild ∧ cfg.verbosity == .verbose) ∨ cfg.verbosity != .quiet
+
+/-- The core structure of a Lake job. -/
+structure JobCore (α : Type u)  where
+  /-- The Lean `Task` object for the job. -/
+  task : α
+  /--
+  A caption for the job in Lake's build monitor.
+  Will be formatted like `✔ [3/5] Ran <caption>`.
+  -/
+  caption : String
+  /-- Whether this job failing should cause the build to fail. -/
+  optional : Bool := false
+  deriving Inhabited
+
+/-- A Lake job task with an opaque value type in `Type`. -/
+declare_opaque_type OpaqueJobTask
+
+/-- A Lake job with an opaque value type in `Type`. -/
+abbrev OpaqueJob := JobCore OpaqueJobTask
 
 /-- A Lake context with a build configuration and additional build data. -/
 structure BuildContext extends BuildConfig, Context where
   leanTrace : BuildTrace
-  registeredJobs : IO.Ref (Array (String × Job Unit))
+  registeredJobs : IO.Ref (Array OpaqueJob)
 
 /-- A transformer to equip a monad with a `BuildContext`. -/
 abbrev BuildT := ReaderT BuildContext
 
-instance [Pure m] : MonadLift LakeM (BuildT m) where
-  monadLift x := fun ctx => pure <| x.run ctx.toContext
+/-- A monad equipped with a Lake build context. -/
+abbrev MonadBuild (m : Type → Type u) :=
+  MonadReaderOf BuildContext m
 
-@[inline] def getBuildContext [Monad m] : BuildT m BuildContext :=
+@[inline] def getBuildContext [MonadBuild m] : m BuildContext :=
   readThe BuildContext
 
-@[inline] def getLeanTrace [Monad m] : BuildT m BuildTrace :=
+@[inline] def getLeanTrace [Functor m] [MonadBuild m] : m BuildTrace :=
   (·.leanTrace) <$> getBuildContext
 
-@[inline] def getBuildConfig [Monad m] : BuildT m BuildConfig :=
+@[inline] def getBuildConfig [Functor m] [MonadBuild m] : m BuildConfig :=
   (·.toBuildConfig) <$> getBuildContext
 
-@[inline] def getIsOldMode [Monad m] : BuildT m Bool :=
+@[inline] def getIsOldMode [Functor m] [MonadBuild m] : m Bool :=
   (·.oldMode) <$> getBuildConfig
 
-@[inline] def getTrustHash [Monad m] : BuildT m Bool :=
+@[inline] def getTrustHash [Functor m] [MonadBuild m] : m Bool :=
   (·.trustHash) <$> getBuildConfig
 
-@[inline] def getNoBuild [Monad m] : BuildT m Bool :=
+@[inline] def getNoBuild [Functor m] [MonadBuild m] : m Bool :=
   (·.noBuild) <$> getBuildConfig
 
-@[inline] def getVerbosity [Monad m] : BuildT m Verbosity :=
+@[inline] def getVerbosity [Functor m] [MonadBuild m] : m Verbosity :=
   (·.verbosity) <$> getBuildConfig
 
-@[inline] def getIsVerbose [Monad m] : BuildT m Bool :=
+@[inline] def getIsVerbose [Functor m] [MonadBuild m] : m Bool :=
   (· == .verbose) <$> getVerbosity
 
-@[inline] def getIsQuiet [Monad m] : BuildT m Bool :=
+@[inline] def getIsQuiet [Functor m] [MonadBuild m] : m Bool :=
   (· == .quiet) <$> getVerbosity
 
 /-- The internal core monad of Lake builds.  Not intended for user use. -/
 abbrev CoreBuildM := BuildT LogIO
 
-/-- The monad of asynchronous Lake jobs. -/
-abbrev JobM := CoreBuildM
+/--
+Logs a build step with `message`.
 
-/-- The monad used to spawn asynchronous Lake build jobs. Lifts into `FetchM`. -/
-abbrev SpawnM := BuildT BaseIO
-
-/-- The monad used to spawn asynchronous Lake build jobs. **Replaced by `SpawnM`.** -/
-@[deprecated SpawnM] abbrev SchedulerM := SpawnM
+**Deprecated:**  Build steps are now managed by a top-level build monitor.
+As a result, this no longer functions the way it used to. It now just logs the
+`message` via `logVerbose`.
+-/
+@[deprecated (since := "2024-05-25"), inline] def logStep [Monad m] [MonadLog m] (message : String) : m Unit := do
+  logVerbose message

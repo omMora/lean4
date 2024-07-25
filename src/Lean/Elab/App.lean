@@ -5,6 +5,7 @@ Authors: Leonardo de Moura
 -/
 prelude
 import Lean.Util.FindMVar
+import Lean.Util.CollectFVars
 import Lean.Parser.Term
 import Lean.Meta.KAbstract
 import Lean.Meta.Tactic.ElimInfo
@@ -59,7 +60,7 @@ private def mkProjAndCheck (structName : Name) (idx : Nat) (e : Expr) : MetaM Ex
 def synthesizeAppInstMVars (instMVars : Array MVarId) (app : Expr) : TermElabM Unit :=
   for mvarId in instMVars do
     unless (← synthesizeInstMVarCore mvarId) do
-      registerSyntheticMVarWithCurrRef mvarId SyntheticMVarKind.typeClass
+      registerSyntheticMVarWithCurrRef mvarId (.typeClass none)
       registerMVarErrorImplicitArgInfo mvarId (← getRef) app
 
 /-- Return `some namedArg` if `namedArgs` contains an entry for `binderName`. -/
@@ -233,9 +234,7 @@ def eraseNamedArg (binderName : Name) : M Unit :=
 private def addNewArg (argName : Name) (arg : Expr) : M Unit := do
   modify fun s => { s with f := mkApp s.f arg, fType := s.fType.bindingBody!.instantiate1 arg }
   if arg.isMVar then
-    let mvarId := arg.mvarId!
-    if let some mvarErrorInfo ← getMVarErrorInfo? mvarId then
-      registerMVarErrorInfo { mvarErrorInfo with argName? := argName }
+    registerMVarArgName arg.mvarId! argName
 
 /--
   Elaborate the given `Arg` and add it to the result. See `addNewArg`.
@@ -713,6 +712,12 @@ structure Context where
   ```
   theorem Eq.subst' {α} {motive : α → Prop} {a b : α} (h : a = b) : motive a → motive b
   ```
+  For another example, the term `isEmptyElim (α := α)` is an underapplied eliminator, and it needs
+  argument `α` to be elaborated eagerly to create a type-correct motive.
+  ```
+  def isEmptyElim [IsEmpty α] {p : α → Sort _} (a : α) : p a := ...
+  example {α : Type _} [IsEmpty α] : id (α → False) := isEmptyElim (α := α)
+  ```
   -/
   extraArgsPos : Array Nat
 
@@ -726,8 +731,8 @@ structure State where
   namedArgs    : List NamedArg
   /-- User-provided arguments that still have to be processed. -/
   args         : List Arg
-  /-- Discriminants processed so far. -/
-  discrs       : Array Expr := #[]
+  /-- Discriminants (targets) processed so far. -/
+  discrs       : Array (Option Expr)
   /-- Instance implicit arguments collected so far. -/
   instMVars    : Array MVarId := #[]
   /-- Position of the next argument to be processed. We use it to decide whether the argument is the motive or a discriminant. -/
@@ -760,7 +765,7 @@ def revertArgs (args : List Arg) (f : Expr) (expectedType : Expr) : TermElabM (E
     return (mkApp f val, mkForall (← mkFreshBinderName) BinderInfo.default valType expectedTypeBody)
 
 /--
-Construct the resulting application after all discriminants have bee elaborated, and we have
+Construct the resulting application after all discriminants have been elaborated, and we have
 consumed as many given arguments as possible.
 -/
 def finalize : M Expr := do
@@ -768,29 +773,50 @@ def finalize : M Expr := do
     throwError "failed to elaborate eliminator, unused named arguments: {(← get).namedArgs.map (·.name)}"
   let some motive := (← get).motive?
     | throwError "failed to elaborate eliminator, insufficient number of arguments"
+  trace[Elab.app.elab_as_elim] "motive: {motive}"
   forallTelescope (← get).fType fun xs _ => do
+    trace[Elab.app.elab_as_elim] "xs: {xs}"
     let mut expectedType := (← read).expectedType
+    trace[Elab.app.elab_as_elim] "expectedType:{indentD expectedType}"
+    let throwInsufficient := do
+      throwError "failed to elaborate eliminator, insufficient number of arguments, expected type:{indentExpr expectedType}"
     let mut f := (← get).f
     if xs.size > 0 then
+      -- under-application, specialize the expected type using `xs`
       assert! (← get).args.isEmpty
-      try
-        expectedType ← instantiateForall expectedType xs
-      catch _ =>
-        throwError "failed to elaborate eliminator, insufficient number of arguments, expected type:{indentExpr expectedType}"
+      for x in xs do
+        let .forallE _ t b _ ← whnf expectedType | throwInsufficient
+        unless ← fullApproxDefEq <| isDefEq t (← inferType x) do
+          -- We can't assume that these binding domains were supposed to line up, so report insufficient arguments
+          throwInsufficient
+        expectedType := b.instantiate1 x
+      trace[Elab.app.elab_as_elim] "xs after specialization of expected type: {xs}"
     else
-      -- over-application, simulate `revert`
+      -- over-application, simulate `revert` while generalizing the values of these arguments in the expected type
       (f, expectedType) ← revertArgs (← get).args f expectedType
+      unless ← isTypeCorrect expectedType do
+        throwError "failed to elaborate eliminator, after generalizing over-applied arguments, expected type is type incorrect:{indentExpr expectedType}"
+    trace[Elab.app.elab_as_elim] "expectedType after processing:{indentD expectedType}"
     let result := mkAppN f xs
+    trace[Elab.app.elab_as_elim] "result:{indentD result}"
     let mut discrs := (← get).discrs
     let idx := (← get).idx
-    if (← get).discrs.size < (← read).elimInfo.targetsPos.size then
+    if discrs.any Option.isNone then
       for i in [idx:idx + xs.size], x in xs do
-        if (← read).elimInfo.targetsPos.contains i then
-          discrs := discrs.push x
-    let motiveVal ← mkMotive discrs expectedType
+        if let some tidx := (← read).elimInfo.targetsPos.indexOf? i then
+          discrs := discrs.set! tidx x
+    if let some idx := discrs.findIdx? Option.isNone then
+      -- This should not happen.
+      trace[Elab.app.elab_as_elim] "Internal error, missing target with index {idx}"
+      throwError "failed to elaborate eliminator, insufficient number of arguments"
+    trace[Elab.app.elab_as_elim] "discrs: {discrs.map Option.get!}"
+    let motiveVal ← mkMotive (discrs.map Option.get!) expectedType
+    unless (← isTypeCorrect motiveVal) do
+      throwError "failed to elaborate eliminator, motive is not type correct:{indentD motiveVal}"
     unless (← isDefEq motive motiveVal) do
       throwError "failed to elaborate eliminator, invalid motive{indentExpr motiveVal}"
     synthesizeAppInstMVars (← get).instMVars result
+    trace[Elab.app.elab_as_elim] "completed motive:{indentD motive}"
     let result ← mkLambdaFVars xs (← instantiateMVars result)
     return result
 
@@ -818,9 +844,9 @@ def getNextArg? (binderName : Name) (binderInfo : BinderInfo) : M (LOption Arg) 
 def setMotive (motive : Expr) : M Unit :=
   modify fun s => { s with motive? := motive }
 
-/-- Push the given expression into the `discrs` field in the state. -/
-def addDiscr (discr : Expr) : M Unit :=
-  modify fun s => { s with discrs := s.discrs.push discr }
+/-- Push the given expression into the `discrs` field in the state, where `i` is which target it is for. -/
+def addDiscr (i : Nat) (discr : Expr) : M Unit :=
+  modify fun s => { s with discrs := s.discrs.set! i discr }
 
 /-- Elaborate the given argument with the given expected type. -/
 private def elabArg (arg : Arg) (argExpectedType : Expr) : M Expr := do
@@ -833,9 +859,7 @@ private def elabArg (arg : Arg) (argExpectedType : Expr) : M Expr := do
 /-- Save information for producing error messages. -/
 def saveArgInfo (arg : Expr) (binderName : Name) : M Unit := do
   if arg.isMVar then
-    let mvarId := arg.mvarId!
-    if let some mvarErrorInfo ← getMVarErrorInfo? mvarId then
-      registerMVarErrorInfo { mvarErrorInfo with argName? := binderName }
+    registerMVarArgName arg.mvarId! binderName
 
 /-- Create an implicit argument using the given `BinderInfo`. -/
 def mkImplicitArg (argExpectedType : Expr) (bi : BinderInfo) : M Expr := do
@@ -857,11 +881,11 @@ partial def main : M Expr := do
     let motive ← mkImplicitArg binderType binderInfo
     setMotive motive
     addArgAndContinue motive
-  else if (← read).elimInfo.targetsPos.contains idx then
+  else if let some tidx := (← read).elimInfo.targetsPos.indexOf? idx then
     match (← getNextArg? binderName binderInfo) with
-    | .some arg => let discr ← elabArg arg binderType; addDiscr discr; addArgAndContinue discr
+    | .some arg => let discr ← elabArg arg binderType; addDiscr tidx discr; addArgAndContinue discr
     | .undef => finalize
-    | .none => let discr ← mkImplicitArg binderType binderInfo; addDiscr discr; addArgAndContinue discr
+    | .none => let discr ← mkImplicitArg binderType binderInfo; addDiscr tidx discr; addArgAndContinue discr
   else match (← getNextArg? binderName binderInfo) with
     | .some (.stx stx) =>
       if (← read).extraArgsPos.contains idx then
@@ -923,10 +947,12 @@ def elabAppArgs (f : Expr) (namedArgs : Array NamedArg) (args : Array Arg)
     let expectedType ← instantiateMVars expectedType
     if expectedType.getAppFn.isMVar then throwError "failed to elaborate eliminator, expected type is not available"
     let extraArgsPos ← getElabAsElimExtraArgsPos elimInfo
+    trace[Elab.app.elab_as_elim] "extraArgsPos: {extraArgsPos}"
     ElabElim.main.run { elimInfo, expectedType, extraArgsPos } |>.run' {
       f, fType
       args := args.toList
       namedArgs := namedArgs.toList
+      discrs := mkArray elimInfo.targetsPos.size none
     }
   else
     ElabAppArgs.main.run { explicit, ellipsis, resultIsOutParamSupport } |>.run' {
@@ -956,19 +982,29 @@ where
 
   /--
   Collect extra argument positions that must be elaborated eagerly when using `elab_as_elim`.
-  The idea is that the contribute to motive inference. See comment at `ElamElim.Context.extraArgsPos`.
+  The idea is that they contribute to motive inference. See comment at `ElamElim.Context.extraArgsPos`.
   -/
   getElabAsElimExtraArgsPos (elimInfo : ElimInfo) : MetaM (Array Nat) := do
     forallTelescope elimInfo.elimType fun xs type => do
-      let resultArgs := type.getAppArgs
+      let targets := type.getAppArgs
+      /- Compute transitive closure of fvars appearing in the motive and the targets. -/
+      let initMotiveFVars : CollectFVars.State := targets.foldl (init := {}) collectFVars
+      let motiveFVars ← xs.size.foldRevM (init := initMotiveFVars) fun i s => do
+        let x := xs[i]!
+        if elimInfo.motivePos == i || elimInfo.targetsPos.contains i || s.fvarSet.contains x.fvarId! then
+          return collectFVars s (← inferType x)
+        else
+          return s
+      /- Collect the extra argument positions -/
       let mut extraArgsPos := #[]
       for i in [:xs.size] do
         let x := xs[i]!
-        unless elimInfo.targetsPos.contains i do
-          let xType ← inferType x
+        unless elimInfo.motivePos == i || elimInfo.targetsPos.contains i do
+          let xType ← x.fvarId!.getType
           /- We only consider "first-order" types because we can reliably "extract" information from them. -/
-          if isFirstOrder xType
-             && Option.isSome (xType.find? fun e => e.isFVar && resultArgs.contains e) then
+          if motiveFVars.fvarSet.contains x.fvarId!
+             || (isFirstOrder xType
+                 && Option.isSome (xType.find? fun e => e.isFVar && motiveFVars.fvarSet.contains e.fvarId!)) then
             extraArgsPos := extraArgsPos.push i
       return extraArgsPos
 
@@ -1296,6 +1332,7 @@ private partial def elabAppFnId (fIdent : Syntax) (fExplicitUnivs : List Level) 
     funLVals.foldlM (init := acc) fun acc (f, fIdent, fields) => do
       let lvals' := toLVals fields (first := true)
       let s ← observing do
+        checkDeprecated fIdent f
         let f ← addTermInfo fIdent f expectedType?
         let e ← elabAppLVals f (lvals' ++ lvals) namedArgs args expectedType? explicit ellipsis
         if overloaded then ensureHasType expectedType? e else return e
@@ -1317,9 +1354,17 @@ private partial def resolveDotName (id : Syntax) (expectedType? : Option Expr) :
   tryPostponeIfNoneOrMVar expectedType?
   let some expectedType := expectedType?
     | throwError "invalid dotted identifier notation, expected type must be known"
-  forallTelescopeReducing expectedType fun _ resultType => do
+  withForallBody expectedType fun resultType => do
     go resultType expectedType #[]
 where
+  /-- A weak version of forallTelescopeReducing that only uses whnfCore, to avoid unfolding definitions except by `unfoldDefinition?` below. -/
+  withForallBody {α} (type : Expr) (k : Expr → TermElabM α) : TermElabM α :=
+    forallTelescope type fun _ body => do
+      let body ← whnfCore body
+      if body.isForall then
+        withForallBody body k
+      else
+        k body
   go (resultType : Expr) (expectedType : Expr) (previousExceptions : Array Exception) : TermElabM Name := do
     let resultType ← instantiateMVars resultType
     let resultTypeFn := resultType.cleanupAnnotations.getAppFn
@@ -1335,7 +1380,8 @@ where
       | ex@(.error ..) =>
         match (← unfoldDefinition? resultType) with
         | some resultType =>
-          go (← whnfCore resultType) expectedType (previousExceptions.push ex)
+          withForallBody resultType fun resultType => do
+            go resultType expectedType (previousExceptions.push ex)
         | none =>
           previousExceptions.forM fun ex => logException ex
           throw ex
@@ -1428,8 +1474,27 @@ private def getSuccesses (candidates : Array (TermElabResult Expr)) : TermElabM 
           return false
       return true
     | _ => return false
-  if r₂.size == 0 then return r₁ else return r₂
-
+  if r₂.size == 0 then
+    return r₁
+  if r₂.size == 1 then
+    return r₂
+  /-
+  If there are still more than one solution, discard solutions that have pending metavariables.
+  We added this extra filter to address regressions introduced after fixing
+  `isDefEqStuckEx` behavior at `ExprDefEq.lean`.
+  -/
+  let r₂ ← candidates.filterM fun
+    | .ok _ s => do
+      try
+        s.restore
+        synthesizeSyntheticMVars (postpone := .no)
+        return true
+      catch _ =>
+        return false
+    | _ => return false
+  if r₂.size == 0 then
+    return r₁
+  return r₂
 /--
   Throw an error message that describes why each possible interpretation for the overloaded notation and symbols did not work.
   We use a nested error message to aggregate the exceptions produced by each failure.
@@ -1509,5 +1574,6 @@ builtin_initialize
   registerTraceClass `Elab.app.args (inherited := true)
   registerTraceClass `Elab.app.propagateExpectedType (inherited := true)
   registerTraceClass `Elab.app.finalize (inherited := true)
+  registerTraceClass `Elab.app.elab_as_elim (inherited := true)
 
 end Lean.Elab.Term
